@@ -40,19 +40,7 @@ fun AudioPlayerApp(
         topBar = {
             when (currentScreen) {
                 "playlists" -> {
-                    TopAppBar(
-                        title = { Text("AudioPlayer") },
-                        actions = {
-                            IconButton(
-                                onClick = { viewModel.refreshAudioFiles() }
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Refresh,
-                                    contentDescription = "刷新音乐库"
-                                )
-                            }
-                        }
-                    )
+                    // 首页不显示TopBar，保持界面简洁
                 }
                 else -> {
                     // 其他界面的TopBar由各自界面处理
