@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import com.audioplayer.service.MediaController
 
 class AudioPlayerViewModel(application: Application) : AndroidViewModel(application) {
@@ -296,22 +298,31 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
     
-    fun createPlaylistFromFolder(name: String, folderPath: String) {
+    fun createPlaylistFromFolder(name: String, folderUri: String) {
         viewModelScope.launch {
             try {
                 val playlist = Playlist(name = name)
                 repository.insertPlaylist(playlist)
                 
-                // 扫描文件夹中的音频文件
-                val fileManager = com.audioplayer.utils.FileManager(getApplication())
-                val audioFiles = fileManager.scanAudioFilesInFolder(folderPath)
+                android.util.Log.d("AudioPlayerVM", "Creating playlist ${playlist.name} from folder URI: $folderUri")
                 
-                // 添加到数据库
-                repository.insertAudioFiles(audioFiles)
+                // 扫描选择文件夹中的音频文件
+                val audioFiles = scanAudioFilesFromSelectedFolder(folderUri)
                 
-                // 添加到播放列表
-                audioFiles.forEachIndexed { index, audioFile ->
-                    repository.addAudioFileToPlaylist(playlist.id, audioFile.id, index)
+                android.util.Log.d("AudioPlayerVM", "Found ${audioFiles.size} audio files in selected folder")
+                
+                if (audioFiles.isNotEmpty()) {
+                    // 先保存音频文件到数据库
+                    repository.insertAudioFiles(audioFiles)
+                    
+                    // 添加到播放列表
+                    audioFiles.forEachIndexed { index, audioFile ->
+                        repository.addAudioFileToPlaylist(playlist.id, audioFile.id, index)
+                    }
+                    
+                    android.util.Log.d("AudioPlayerVM", "Successfully added ${audioFiles.size} files to playlist ${playlist.name}")
+                } else {
+                    android.util.Log.w("AudioPlayerVM", "No audio files found in selected folder")
                 }
                 
             } catch (e: Exception) {
@@ -320,11 +331,95 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
     
+    private suspend fun scanAudioFilesFromSelectedFolder(folderUri: String): List<AudioFile> = withContext(Dispatchers.IO) {
+        val audioFiles = mutableListOf<AudioFile>()
+        
+        try {
+            // 获取设备中的所有音频文件
+            val allAudioFiles = repository.scanAudioFiles()
+            
+            // 解析文档树URI获取文件夹名称
+            val folderName = extractFolderNameFromUri(folderUri)
+            
+            android.util.Log.d("AudioPlayerVM", "Looking for audio files in folder: $folderName")
+            
+            // 根据文件夹名称过滤音频文件
+            if (folderName != null) {
+                for (audioFile in allAudioFiles) {
+                    val filePath = audioFile.path
+                    val file = java.io.File(filePath)
+                    val parentFolder = file.parent
+                    
+                    // 检查文件路径是否包含指定的文件夹名称
+                    if (parentFolder != null && 
+                        (parentFolder.contains(folderName, ignoreCase = true) || 
+                         file.parentFile?.name?.equals(folderName, ignoreCase = true) == true)) {
+                        audioFiles.add(audioFile)
+                        android.util.Log.d("AudioPlayerVM", "Added file: ${audioFile.title} from ${parentFolder}")
+                    }
+                }
+            }
+            
+            android.util.Log.d("AudioPlayerVM", "Filtered ${audioFiles.size} audio files from folder $folderName")
+            
+        } catch (e: Exception) {
+            android.util.Log.e("AudioPlayerVM", "Error scanning folder audio files: ${e.message}", e)
+        }
+        
+        audioFiles
+    }
+    
+    private fun extractFolderNameFromUri(folderUri: String): String? {
+        return try {
+            // 从 content:// URI 中提取文件夹名称
+            val uri = android.net.Uri.parse(folderUri)
+            val docId = android.provider.DocumentsContract.getTreeDocumentId(uri)
+            
+            // 解析文档ID获取文件夹名称
+            // 文档ID通常包含路径信息
+            when {
+                docId.contains(":") -> {
+                    // 对于 primary:Music 或 1234-5678:Music 等格式
+                    val parts = docId.split(":")
+                    if (parts.size > 1) {
+                        val path = parts.last()
+                        if (path.contains("/")) {
+                            // 如果是子文件夹路径，取最后一部分
+                            path.split("/").last()
+                        } else {
+                            path
+                        }
+                    } else {
+                        null
+                    }
+                }
+                else -> {
+                    // 如果没有冒号，直接使用整个文档ID
+                    docId
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("AudioPlayerVM", "Error extracting folder name from URI: ${e.message}", e)
+            null
+        }
+    }
+
+    
+    private var playlistMonitorJob: Job? = null
+    
     fun selectPlaylist(playlist: Playlist) {
         _selectedPlaylist.value = playlist
-        viewModelScope.launch {
+        
+        // 取消之前的监听
+        playlistMonitorJob?.cancel()
+        
+        // 开始新的监听
+        playlistMonitorJob = viewModelScope.launch {
             repository.getPlaylistAudioFiles(playlist.id).collect { audioFiles ->
-                _currentPlaylistAudioFiles.value = audioFiles
+                // 只有当前选中的歌单才更新
+                if (_selectedPlaylist.value?.id == playlist.id) {
+                    _currentPlaylistAudioFiles.value = audioFiles
+                }
             }
         }
     }
@@ -347,5 +442,6 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
     override fun onCleared() {
         super.onCleared()
         stopProgressUpdate()
+        playlistMonitorJob?.cancel()
     }
 }

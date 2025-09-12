@@ -4,8 +4,6 @@ package com.audioplayer.ui
 
 import android.app.Activity
 import android.content.Intent
-import android.net.Uri
-import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -17,10 +15,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import com.audioplayer.data.Playlist
 import com.audioplayer.viewmodel.AudioPlayerViewModel
 
@@ -39,11 +35,9 @@ fun PlaylistManagerScreen(
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             result.data?.data?.let { uri ->
-                val folderPath = getFolderPathFromUri(uri)
-                if (folderPath != null) {
-                    selectedFolderPath = folderPath
-                    showCreateDialog = true
-                }
+                // 保存URI字符串作为文件夹标识
+                selectedFolderPath = uri.toString()
+                showCreateDialog = true
             }
         }
     }
@@ -246,7 +240,7 @@ private fun CreatePlaylistDialog(
             Column {
                 if (isFromFolder) {
                     Text(
-                        text = "将从选择的文件夹中扫描所有音频文件并添加到歌单中",
+                        text = "将从选择的文件夹中扫描音频文件并添加到歌单中",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(bottom = 8.dp)
@@ -278,15 +272,6 @@ private fun CreatePlaylistDialog(
             }
         }
     )
-}
-
-private fun getFolderPathFromUri(uri: Uri): String? {
-    return try {
-        val docId = DocumentsContract.getTreeDocumentId(uri)
-        docId
-    } catch (e: Exception) {
-        null
-    }
 }
 
 private fun formatTimestamp(timestamp: Long): String {
