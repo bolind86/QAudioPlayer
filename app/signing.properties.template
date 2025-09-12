@@ -1,0 +1,15 @@
+# 签名配置模板文件
+# 复制此文件为 signing.properties 并填入实际的签名信息
+# 注意：signing.properties 应该被添加到 .gitignore 中，不要提交到版本控制
+
+# 发布版签名配置
+RELEASE_STORE_FILE=../release.keystore
+RELEASE_STORE_PASSWORD=your_keystore_password
+RELEASE_KEY_ALIAS=your_key_alias
+RELEASE_KEY_PASSWORD=your_key_password
+
+# 调试版签名配置（可选）
+DEBUG_STORE_FILE=../debug.keystore
+DEBUG_STORE_PASSWORD=android
+DEBUG_KEY_ALIAS=androiddebugkey
+DEBUG_KEY_PASSWORD=android
