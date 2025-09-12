@@ -1,197 +1,185 @@
 package com.audioplayer.service
 
-import android.app.Notification
-import android.app.PendingIntent
+import android.app.*
 import android.content.Intent
-import androidx.media3.common.AudioAttributes
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
-import androidx.media3.ui.PlayerNotificationManager
+import android.media.MediaPlayer
+import android.os.Binder
+import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
+import androidx.core.app.NotificationCompat
 import com.audioplayer.MainActivity
-import com.audioplayer.data.PlayMode
+import com.audioplayer.data.AudioFile
+import android.net.Uri
+import java.io.File
 
-class AudioService : MediaSessionService() {
-    private var mediaSession: MediaSession? = null
-    private lateinit var player: ExoPlayer
-    private var playerNotificationManager: PlayerNotificationManager? = null
-
+class AudioService : Service() {
+    
+    private val binder = AudioBinder()
+    private var mediaPlayer: MediaPlayer? = null
+    private var currentAudioFile: AudioFile? = null
+    private var isPlayingState = false
+    private var onCompletionCallback: (() -> Unit)? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    
+    companion object {
+        private const val NOTIFICATION_ID = 1
+        private const val CHANNEL_ID = "AudioPlayerChannel"
+    }
+    
+    inner class AudioBinder : Binder() {
+        fun getService(): AudioService = this@AudioService
+    }
+    
+    override fun onBind(intent: Intent?): IBinder = binder
+    
     override fun onCreate() {
         super.onCreate()
-        initializeSessionAndPlayer()
-        setupNotification()
+        createNotificationChannel()
     }
-
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
-        mediaSession
-
+    
     override fun onDestroy() {
-        playerNotificationManager?.setPlayer(null)
-        mediaSession?.run {
-            player.release()
-            release()
-            mediaSession = null
-        }
         super.onDestroy()
+        mediaPlayer?.release()
     }
-
-    private fun initializeSessionAndPlayer() {
-        player = ExoPlayer.Builder(this)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .setUsage(C.USAGE_MEDIA)
-                    .build(),
-                true
-            )
-            .setHandleAudioBecomingNoisy(true)
-            .build()
-
-        val sessionActivityPendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        mediaSession = MediaSession.Builder(this, player)
-            .setSessionActivity(sessionActivityPendingIntent)
-            .setCallback(AudioSessionCallback())
-            .build()
-    }
-
-    private fun setupNotification() {
-        playerNotificationManager = PlayerNotificationManager.Builder(this, NOTIFICATION_ID, CHANNEL_ID)
-            .setMediaDescriptionAdapter(AudioNotificationAdapter(this))
-            .setNotificationListener(AudioNotificationListener())
-            .setChannelNameResourceId(androidx.core.R.string.status_bar_notification_info_overflow)
-            .setChannelDescriptionResourceId(androidx.core.R.string.status_bar_notification_info_overflow)
-            .build()
+    
+    fun playAudio(audioFile: AudioFile) {
+        try {
+            currentAudioFile = audioFile
             
-        playerNotificationManager?.apply {
-            setUseFastForwardAction(true)
-            setUseRewindAction(true)
-            setUseNextAction(true)
-            setUsePreviousAction(true)
-            setUseStopAction(true)
-            setPlayer(player)
-        }
-    }
-
-    private inner class AudioSessionCallback : MediaSession.Callback {
-        override fun onAddMediaItems(
-            mediaSession: MediaSession,
-            controller: MediaSession.ControllerInfo,
-            mediaItems: MutableList<MediaItem>
-        ): MutableList<MediaItem> {
-            return mediaItems
-        }
-    }
-
-    private inner class AudioNotificationListener : PlayerNotificationManager.NotificationListener {
-        override fun onNotificationPosted(
-            notificationId: Int,
-            notification: Notification,
-            ongoing: Boolean
-        ) {
-            if (ongoing) {
-                startForeground(notificationId, notification)
-            } else {
-                stopForeground(false)
-            }
-        }
-
-        override fun onNotificationCancelled(notificationId: Int, dismissedByUser: Boolean) {
-            stopForeground(true)
-            stopSelf()
-        }
-    }
-
-    companion object {
-        private const val NOTIFICATION_ID = 1001
-        private const val CHANNEL_ID = "audio_playback_channel"
-    }
-}
-
-class PlaybackController(private val player: ExoPlayer) {
-    private var currentPlayMode = PlayMode.SEQUENTIAL
-    private var currentPlaylist: List<MediaItem> = emptyList()
-    private var currentIndex = 0
-
-    fun setPlayMode(playMode: PlayMode) {
-        currentPlayMode = playMode
-        updatePlayerRepeatMode()
-    }
-
-    fun setPlaylist(playlist: List<MediaItem>, startIndex: Int = 0) {
-        currentPlaylist = playlist
-        currentIndex = startIndex
-        player.setMediaItems(playlist, startIndex, 0)
-        player.prepare()
-    }
-
-    fun playNext(): Boolean {
-        return when (currentPlayMode) {
-            PlayMode.SEQUENTIAL -> {
-                if (currentIndex < currentPlaylist.size - 1) {
-                    currentIndex++
-                    player.seekToNext()
+            mediaPlayer?.release()
+            mediaPlayer = MediaPlayer().apply {
+                // 检查文件是否存在
+                val file = File(audioFile.path)
+                if (file.exists()) {
+                    setDataSource(audioFile.path)
+                } else {
+                    // 如果文件不存在，尝试作为URI处理
+                    setDataSource(this@AudioService, Uri.parse(audioFile.path))
+                }
+                
+                setOnPreparedListener {
+                    start()
+                    isPlayingState = true
+                    startForeground(NOTIFICATION_ID, createNotification())
+                }
+                setOnCompletionListener {
+                    android.util.Log.d("AudioService", "onCompletion called for: ${audioFile.title}")
+                    isPlayingState = false
+                    // 确保在主线程中执行回调
+                    mainHandler.post {
+                        android.util.Log.d("AudioService", "Invoking completion callback")
+                        onCompletionCallback?.invoke()
+                    }
+                }
+                setOnErrorListener { _, what, extra ->
+                    android.util.Log.e("AudioService", "MediaPlayer error: what=$what, extra=$extra")
+                    android.util.Log.e("AudioService", "Audio file path: ${audioFile.path}")
+                    isPlayingState = false
                     true
-                } else {
-                    false
                 }
+                prepareAsync()
             }
-            PlayMode.REPEAT_ALL -> {
-                currentIndex = if (currentIndex < currentPlaylist.size - 1) {
-                    currentIndex + 1
-                } else {
-                    0
-                }
-                player.seekToNext()
-                true
-            }
-            PlayMode.REPEAT_ONE -> {
-                player.seekTo(0)
-                true
+        } catch (e: Exception) {
+            android.util.Log.e("AudioService", "Error playing audio: ${e.message}", e)
+            isPlayingState = false
+        }
+    }
+    
+    fun pauseAudio() {
+        mediaPlayer?.let {
+            if (it.isPlaying) {
+                it.pause()
+                isPlayingState = false
+                startForeground(NOTIFICATION_ID, createNotification())
             }
         }
     }
-
-    fun playPrevious(): Boolean {
-        return when (currentPlayMode) {
-            PlayMode.SEQUENTIAL -> {
-                if (currentIndex > 0) {
-                    currentIndex--
-                    player.seekToPrevious()
-                    true
-                } else {
-                    false
-                }
-            }
-            PlayMode.REPEAT_ALL -> {
-                currentIndex = if (currentIndex > 0) {
-                    currentIndex - 1
-                } else {
-                    currentPlaylist.size - 1
-                }
-                player.seekToPrevious()
-                true
-            }
-            PlayMode.REPEAT_ONE -> {
-                player.seekTo(0)
-                true
+    
+    fun resumeAudio() {
+        mediaPlayer?.let {
+            if (!it.isPlaying) {
+                it.start()
+                isPlayingState = true
+                startForeground(NOTIFICATION_ID, createNotification())
             }
         }
     }
-
-    private fun updatePlayerRepeatMode() {
-        player.repeatMode = when (currentPlayMode) {
-            PlayMode.SEQUENTIAL -> Player.REPEAT_MODE_OFF
-            PlayMode.REPEAT_ALL -> Player.REPEAT_MODE_ALL
-            PlayMode.REPEAT_ONE -> Player.REPEAT_MODE_ONE
+    
+    fun stopAudio() {
+        mediaPlayer?.let {
+            if (it.isPlaying) {
+                it.stop()
+            }
+            it.release()
         }
+        mediaPlayer = null
+        isPlayingState = false
+        currentAudioFile = null
+        stopForeground(true)
+    }
+    
+    fun isPlaying(): Boolean = isPlayingState
+        
+    fun getCurrentPosition(): Long = mediaPlayer?.currentPosition?.toLong() ?: 0L
+        
+    fun getDuration(): Long = mediaPlayer?.duration?.toLong() ?: 0L
+        
+    fun seekTo(position: Long) {
+        mediaPlayer?.let { player ->
+            player.seekTo(position.toInt())
+            // 如果不在播放状态但MediaPlayer已准备好，则开始播放
+            if (!isPlayingState && !player.isPlaying) {
+                try {
+                    player.start()
+                    isPlayingState = true
+                    startForeground(NOTIFICATION_ID, createNotification())
+                } catch (e: Exception) {
+                    android.util.Log.e("AudioService", "Error starting playback after seek: ${e.message}", e)
+                }
+            }
+        }
+    }
+    
+    fun getCurrentAudioFile(): AudioFile? = currentAudioFile
+    
+    fun setOnCompletionCallback(callback: () -> Unit) {
+        android.util.Log.d("AudioService", "setOnCompletionCallback called")
+        onCompletionCallback = callback
+    }
+    
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Audio Player",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Audio Player Service"
+        }
+        
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.createNotificationChannel(channel)
+    }
+    
+    private fun createNotification(): Notification {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        
+        val title = currentAudioFile?.title ?: "Unknown"
+        val artist = currentAudioFile?.artist ?: "Unknown Artist"
+        
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(artist)
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .build()
     }
 }

@@ -1,37 +1,32 @@
 package com.audioplayer.viewmodel
 
-import android.content.Context
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
-import androidx.media3.common.Player
 import com.audioplayer.data.AudioFile
 import com.audioplayer.data.PlayMode
 import com.audioplayer.data.Playlist
 import com.audioplayer.repository.AudioRepository
-import com.audioplayer.service.MediaControllerManager
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import com.audioplayer.service.MediaController
 
-class AudioPlayerViewModel(
-    private val repository: AudioRepository,
-    private val context: Context
-) : ViewModel() {
+class AudioPlayerViewModel(application: Application) : AndroidViewModel(application) {
     
-    private val mediaControllerManager = MediaControllerManager(context)
+    private val repository = AudioRepository(application)
+    private var mediaController: MediaController? = null
+    private var progressUpdateJob: Job? = null
     
-    private val _currentPlaylist = MutableStateFlow<List<AudioFile>>(emptyList())
-    val currentPlaylist: StateFlow<List<AudioFile>> = _currentPlaylist.asStateFlow()
-    
-    private val _currentTrack = MutableStateFlow<AudioFile?>(null)
-    val currentTrack: StateFlow<AudioFile?> = _currentTrack.asStateFlow()
+    // 播放状态
+    private val _currentAudioFile = MutableStateFlow<AudioFile?>(null)
+    val currentAudioFile: StateFlow<AudioFile?> = _currentAudioFile.asStateFlow()
     
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
     
-    private val _playMode = MutableStateFlow(PlayMode.SEQUENTIAL)
+    private val _playMode = MutableStateFlow(PlayMode.SEQUENCE)
     val playMode: StateFlow<PlayMode> = _playMode.asStateFlow()
     
     private val _currentPosition = MutableStateFlow(0L)
@@ -40,221 +35,263 @@ class AudioPlayerViewModel(
     private val _duration = MutableStateFlow(0L)
     val duration: StateFlow<Long> = _duration.asStateFlow()
     
-    private val _volume = MutableStateFlow(0.8f)
-    val volume: StateFlow<Float> = _volume.asStateFlow()
+    // 数据流
+    val audioFiles: Flow<List<AudioFile>> = repository.getAllAudioFiles()
+    val playlists: Flow<List<Playlist>> = repository.getAllPlaylists()
     
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+    private val _currentPlaylist = MutableStateFlow<List<AudioFile>>(emptyList())
+    val currentPlaylist: StateFlow<List<AudioFile>> = _currentPlaylist.asStateFlow()
     
-    private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+    private var currentIndex = 0
     
-    val playlists: StateFlow<List<Playlist>> = repository.getAllPlaylists()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = emptyList()
-        )
-    
-    fun addFolderToPlaylist(folderPath: String, playlistName: String? = null) {
-        viewModelScope.launch {
-            try {
-                _isLoading.value = true
-                _errorMessage.value = null
-                val playlistId = repository.addFolderToPlaylist(folderPath, playlistName)
-                loadPlaylist(playlistId)
-            } catch (e: Exception) {
-                _errorMessage.value = "添加文件夹失败: ${e.message ?: "未知错误"}"
-            } finally {
-                _isLoading.value = false
-            }
+    fun setMediaController(controller: MediaController) {
+        mediaController = controller
+        // 设置播放完成回调
+        controller.setOnCompletionCallback {
+            handlePlaybackCompletion()
         }
     }
     
-    fun clearErrorMessage() {
-        _errorMessage.value = null
-    }
-    
-    fun loadPlaylist(playlistId: String) {
-        viewModelScope.launch {
-            try {
-                _errorMessage.value = null
-                repository.getPlaylistAudioFiles(playlistId)
-                    .collect { audioFiles ->
-                        _currentPlaylist.value = audioFiles
-                        if (audioFiles.isNotEmpty()) {
-                            val mediaItems = audioFiles.map { createMediaItem(it) }
-                            mediaControllerManager.setPlaylist(mediaItems)
-                            if (_currentTrack.value == null) {
-                                _currentTrack.value = audioFiles.first()
-                            }
-                        }
+    private fun startProgressUpdate() {
+        progressUpdateJob?.cancel()
+        progressUpdateJob = viewModelScope.launch {
+            while (_isPlaying.value) {
+                mediaController?.let { controller ->
+                    val currentPos = controller.getCurrentPosition().toLong()
+                    val duration = controller.getDuration().toLong()
+                    
+                    _currentPosition.value = currentPos
+                    if (duration > 0) {
+                        _duration.value = duration
                     }
+                }
+                delay(500) // 每0.5秒更新一次，让进度条更流畅
+            }
+        }
+    }
+    
+    private fun stopProgressUpdate() {
+        progressUpdateJob?.cancel()
+        progressUpdateJob = null
+    }
+    
+    private fun handlePlaybackCompletion() {
+        android.util.Log.d("AudioPlayerVM", "handlePlaybackCompletion called, playMode: ${_playMode.value}")
+        
+        // 更新UI状态
+        _isPlaying.value = false
+        stopProgressUpdate()
+        
+        // 根据播放模式处理下一首
+        val playlist = _currentPlaylist.value
+        if (playlist.isEmpty()) {
+            android.util.Log.d("AudioPlayerVM", "Playlist is empty, stopping")
+            return
+        }
+        
+        android.util.Log.d("AudioPlayerVM", "Current index: $currentIndex, playlist size: ${playlist.size}")
+        
+        when (_playMode.value) {
+            PlayMode.SEQUENCE -> {
+                // 顺序播放：播放下一首，如果是最后一首则停止
+                if (currentIndex < playlist.size - 1) {
+                    currentIndex++
+                    android.util.Log.d("AudioPlayerVM", "SEQUENCE: Playing next track at index $currentIndex")
+                    playAudio(playlist[currentIndex], playlist)
+                } else {
+                    // 最后一首播放完毕，停止播放
+                    android.util.Log.d("AudioPlayerVM", "SEQUENCE: Reached end of playlist, stopping")
+                    _currentPosition.value = 0L
+                }
+            }
+            PlayMode.LOOP_ALL -> {
+                // 列表循环：播放下一首，如果是最后一首则回到第一首
+                currentIndex = (currentIndex + 1) % playlist.size
+                android.util.Log.d("AudioPlayerVM", "LOOP_ALL: Playing track at index $currentIndex")
+                playAudio(playlist[currentIndex], playlist)
+            }
+            PlayMode.LOOP_ONE -> {
+                // 单曲循环：重新播放当前歌曲
+                android.util.Log.d("AudioPlayerVM", "LOOP_ONE: Repeating current track at index $currentIndex")
+                playAudio(playlist[currentIndex], playlist)
+            }
+            PlayMode.SHUFFLE -> {
+                // 随机播放：随机选择下一首
+                currentIndex = (0 until playlist.size).random()
+                android.util.Log.d("AudioPlayerVM", "SHUFFLE: Playing random track at index $currentIndex")
+                playAudio(playlist[currentIndex], playlist)
+            }
+        }
+    }
+    
+    fun initializeAudioFiles() {
+        viewModelScope.launch {
+            try {
+                val scannedFiles = repository.scanAudioFiles()
+                repository.insertAudioFiles(scannedFiles)
             } catch (e: Exception) {
-                _errorMessage.value = "加载播放列表失败: ${e.message ?: "未知错误"}"
+                // Handle error
             }
         }
     }
     
-    init {
-        mediaControllerManager.initialize()
-        
-        // 监听媒体控制器状态变化
+    fun refreshAudioFiles() {
         viewModelScope.launch {
-            mediaControllerManager.isPlaying.collect { isPlaying ->
-                _isPlaying.value = isPlaying
+            try {
+                val scannedFiles = repository.scanAudioFiles()
+                repository.insertAudioFiles(scannedFiles)
+            } catch (e: Exception) {
+                // Handle error
             }
         }
-        
+    }
+    
+    fun addAudioFileFromPath(filePath: String) {
         viewModelScope.launch {
-            mediaControllerManager.currentPosition.collect { position ->
-                _currentPosition.value = position
-            }
-        }
-        
-        viewModelScope.launch {
-            mediaControllerManager.duration.collect { duration ->
-                _duration.value = duration
-            }
-        }
-        
-        viewModelScope.launch {
-            mediaControllerManager.volume.collect { volume ->
-                _volume.value = volume
+            try {
+                val file = java.io.File(filePath)
+                if (file.exists() && file.isFile) {
+                    val fileManager = com.audioplayer.utils.FileManager(getApplication())
+                    val audioFiles = fileManager.scanAudioFilesInFolder(file.parent ?: "")
+                    val targetFile = audioFiles.find { it.path == filePath }
+                    targetFile?.let {
+                        repository.insertAudioFile(it)
+                    }
+                }
+            } catch (e: Exception) {
+                // Handle error
             }
         }
     }
     
-    fun playTrack(audioFile: AudioFile) {
-        _currentTrack.value = audioFile
-        val mediaItem = createMediaItem(audioFile)
-        mediaControllerManager.setPlaylist(listOf(mediaItem))
-        mediaControllerManager.play()
-    }
-    
-    fun pauseTrack() {
-        mediaControllerManager.pause()
-    }
-    
-    fun resumeTrack() {
-        mediaControllerManager.play()
-    }
-    
-    private fun createMediaItem(audioFile: AudioFile): MediaItem {
-        return MediaItem.Builder()
-            .setUri(audioFile.filePath)
-            .setMediaId(audioFile.id)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(audioFile.title)
-                    .setArtist(audioFile.artist)
-                    .setAlbumTitle(audioFile.album)
-                    .build()
-            )
-            .build()
-    }
-    
-    fun playNext() {
-        val playlist = _currentPlaylist.value
-        val currentTrack = _currentTrack.value
+    fun playAudio(audioFile: AudioFile, playlist: List<AudioFile> = emptyList()) {
+        _currentAudioFile.value = audioFile
+        _duration.value = audioFile.duration
         
-        if (playlist.isEmpty() || currentTrack == null) return
-        
-        val currentIndex = playlist.indexOf(currentTrack)
-        val nextIndex = when (_playMode.value) {
-            PlayMode.SEQUENTIAL -> {
-                if (currentIndex < playlist.size - 1) currentIndex + 1 else -1
-            }
-            PlayMode.REPEAT_ALL -> {
-                if (currentIndex < playlist.size - 1) currentIndex + 1 else 0
-            }
-            PlayMode.REPEAT_ONE -> currentIndex
+        if (playlist.isNotEmpty()) {
+            _currentPlaylist.value = playlist
+            currentIndex = playlist.indexOf(audioFile).takeIf { it >= 0 } ?: 0
         }
         
-        if (nextIndex >= 0) {
-            _currentTrack.value = playlist[nextIndex]
-            mediaControllerManager.skipToNext()
-        } else {
-            pauseTrack()
-        }
+        // 调用AudioService播放音频
+        mediaController?.play(audioFile)
+        _isPlaying.value = true
+        startProgressUpdate()
     }
     
-    fun playPrevious() {
-        val playlist = _currentPlaylist.value
-        val currentTrack = _currentTrack.value
-        
-        if (playlist.isEmpty() || currentTrack == null) return
-        
-        val currentIndex = playlist.indexOf(currentTrack)
-        val previousIndex = when (_playMode.value) {
-            PlayMode.SEQUENTIAL -> {
-                if (currentIndex > 0) currentIndex - 1 else -1
-            }
-            PlayMode.REPEAT_ALL -> {
-                if (currentIndex > 0) currentIndex - 1 else playlist.size - 1
-            }
-            PlayMode.REPEAT_ONE -> currentIndex
-        }
-        
-        if (previousIndex >= 0) {
-            _currentTrack.value = playlist[previousIndex]
-            mediaControllerManager.skipToPrevious()
-        }
+    fun pauseAudio() {
+        mediaController?.pause()
+        _isPlaying.value = false
+        stopProgressUpdate()
     }
     
-    fun setPlayMode(playMode: PlayMode) {
-        _playMode.value = playMode
-        val repeatMode = when (playMode) {
-            PlayMode.SEQUENTIAL -> Player.REPEAT_MODE_OFF
-            PlayMode.REPEAT_ALL -> Player.REPEAT_MODE_ALL
-            PlayMode.REPEAT_ONE -> Player.REPEAT_MODE_ONE
-        }
-        mediaControllerManager.setRepeatMode(repeatMode)
+    fun resumeAudio() {
+        mediaController?.resume()
+        _isPlaying.value = true
+        startProgressUpdate()
+    }
+    
+    fun stopAudio() {
+        mediaController?.stop()
+        _isPlaying.value = false
+        _currentPosition.value = 0L
+        stopProgressUpdate()
     }
     
     fun seekTo(position: Long) {
-        mediaControllerManager.seekTo(position)
+        mediaController?.seekTo(position.toInt())
+        _currentPosition.value = position
+        
+        // 检查是否因为seek操作而开始播放，如果是则更新状态
+        mediaController?.let { controller ->
+            if (controller.isPlaying() && !_isPlaying.value) {
+                _isPlaying.value = true
+                startProgressUpdate()
+            }
+        }
     }
     
-    fun setVolume(volume: Float) {
-        mediaControllerManager.setVolume(volume)
+    fun nextTrack() {
+        val playlist = _currentPlaylist.value
+        if (playlist.isEmpty()) return
+        
+        when (_playMode.value) {
+            PlayMode.SEQUENCE -> {
+                if (currentIndex < playlist.size - 1) {
+                    currentIndex++
+                    playAudio(playlist[currentIndex], playlist)
+                } else {
+                    stopAudio()
+                }
+            }
+            PlayMode.LOOP_ALL -> {
+                currentIndex = (currentIndex + 1) % playlist.size
+                playAudio(playlist[currentIndex], playlist)
+            }
+            PlayMode.LOOP_ONE -> {
+                playAudio(playlist[currentIndex], playlist)
+            }
+            PlayMode.SHUFFLE -> {
+                currentIndex = (0 until playlist.size).random()
+                playAudio(playlist[currentIndex], playlist)
+            }
+        }
     }
     
-    fun updateDuration(duration: Long) {
-        _duration.value = duration
+    fun previousTrack() {
+        val playlist = _currentPlaylist.value
+        if (playlist.isEmpty()) return
+        
+        when (_playMode.value) {
+            PlayMode.SEQUENCE, PlayMode.LOOP_ALL -> {
+                if (currentIndex > 0) {
+                    currentIndex--
+                } else {
+                    currentIndex = playlist.size - 1
+                }
+                playAudio(playlist[currentIndex], playlist)
+            }
+            PlayMode.LOOP_ONE -> {
+                playAudio(playlist[currentIndex], playlist)
+            }
+            PlayMode.SHUFFLE -> {
+                currentIndex = (0 until playlist.size).random()
+                playAudio(playlist[currentIndex], playlist)
+            }
+        }
     }
     
-    fun updateCurrentPosition(position: Long) {
+    fun setPlayMode(mode: PlayMode) {
+        _playMode.value = mode
+    }
+    
+    fun updatePosition(position: Long) {
         _currentPosition.value = position
     }
     
-    fun removePlaylist(playlist: Playlist) {
+    fun setPlaylist(playlist: List<AudioFile>) {
+        _currentPlaylist.value = playlist
+        currentIndex = 0
+    }
+    
+    fun createPlaylist(name: String): Playlist {
+        return Playlist(name = name)
+    }
+    
+    fun savePlaylist(playlist: Playlist) {
         viewModelScope.launch {
-            repository.removePlaylist(playlist)
+            repository.insertPlaylist(playlist)
         }
     }
     
-    fun refreshPlaylist(playlistId: String) {
+    fun deletePlaylist(playlist: Playlist) {
         viewModelScope.launch {
-            repository.refreshPlaylist(playlistId)
+            repository.deletePlaylist(playlist)
         }
     }
-
+    
     override fun onCleared() {
         super.onCleared()
-        mediaControllerManager.release()
-    }
-}
-
-class AudioPlayerViewModelFactory(
-    private val repository: AudioRepository,
-    private val context: Context
-) : ViewModelProvider.Factory {
-    override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(AudioPlayerViewModel::class.java)) {
-            @Suppress("UNCHECKED_CAST")
-            return AudioPlayerViewModel(repository, context) as T
-        }
-        throw IllegalArgumentException("Unknown ViewModel class")
+        stopProgressUpdate()
     }
 }

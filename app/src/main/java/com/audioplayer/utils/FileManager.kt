@@ -10,6 +10,69 @@ import java.util.UUID
 
 class FileManager(private val context: Context) {
 
+    suspend fun scanAudioFiles(): List<AudioFile> = withContext(Dispatchers.IO) {
+        val audioFiles = mutableListOf<AudioFile>()
+        val projection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.ARTIST,
+            MediaStore.Audio.Media.ALBUM,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.DATA,
+            MediaStore.Audio.Media.SIZE,
+            MediaStore.Audio.Media.DATE_ADDED
+        )
+        
+        val cursor = context.contentResolver.query(
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+            projection,
+            MediaStore.Audio.Media.IS_MUSIC + "=1",
+            null,
+            MediaStore.Audio.Media.TITLE + " ASC"
+        )
+        
+        cursor?.use {
+            val idColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+            val titleColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+            val artistColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+            val albumColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
+            val durationColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
+            val dataColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATA)
+            val sizeColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
+            val dateAddedColumn = it.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
+            
+            while (it.moveToNext()) {
+                val id = it.getLong(idColumn).toString()
+                val title = it.getString(titleColumn) ?: "Unknown"
+                val artist = it.getString(artistColumn)
+                val album = it.getString(albumColumn)
+                val duration = it.getLong(durationColumn)
+                val path = it.getString(dataColumn) ?: continue
+                val size = it.getLong(sizeColumn)
+                val dateAdded = it.getLong(dateAddedColumn) * 1000
+                
+                val file = File(path)
+                if (file.exists()) {
+                    audioFiles.add(
+                        AudioFile(
+                            id = id,
+                            title = title,
+                            artist = artist,
+                            album = album,
+                            duration = duration,
+                            path = path,
+                            folderPath = file.parent ?: "",
+                            size = size,
+                            dateAdded = dateAdded
+                        )
+                    )
+                }
+            }
+        }
+        
+        audioFiles
+    }
+
     suspend fun scanAudioFilesInFolder(folderPath: String): List<AudioFile> =
         withContext(Dispatchers.IO) {
             val audioFiles = mutableListOf<AudioFile>()
@@ -49,14 +112,13 @@ class FileManager(private val context: Context) {
             AudioFile(
                 id = UUID.randomUUID().toString(),
                 title = mediaMetadata.title ?: file.nameWithoutExtension,
-                artist = mediaMetadata.artist ?: "Unknown Artist",
-                album = mediaMetadata.album ?: "Unknown Album",
+                artist = mediaMetadata.artist,
+                album = mediaMetadata.album,
                 duration = mediaMetadata.duration,
-                filePath = file.absolutePath,
+                path = file.absolutePath,
                 folderPath = file.parent ?: "",
                 size = file.length(),
-                dateAdded = System.currentTimeMillis(),
-                albumArt = mediaMetadata.albumArt
+                dateAdded = System.currentTimeMillis()
             )
         } catch (e: Exception) {
             null

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- 
+    Alternatively you can exclude specific paths:
+    <exclude domain="file" path="secret_settings.xml"/>
+    <exclude domain="database" path="secret_database"/>
+    -->
+</full-backup-content>

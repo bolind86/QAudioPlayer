@@ -1,8 +1,5 @@
 package com.audioplayer.ui
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -16,130 +13,72 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.audioplayer.data.AudioFile
 import com.audioplayer.data.PlayMode
-import kotlin.math.roundToInt
 
-@OptIn(ExperimentalAnimationApi::class)
 @Composable
-fun EnhancedPlaybackControls(
-    currentTrack: AudioFile,
+fun PlaybackControls(
+    currentAudioFile: AudioFile?,
     isPlaying: Boolean,
     playMode: PlayMode,
     currentPosition: Long,
     duration: Long,
-    volume: Float,
     onPlayPause: () -> Unit,
     onNext: () -> Unit,
     onPrevious: () -> Unit,
-    onSeekTo: (Long) -> Unit,
-    onVolumeChange: (Float) -> Unit,
-    onPlayModeChange: (PlayMode) -> Unit
+    onSeek: (Long) -> Unit,
+    onPlayModeChange: (PlayMode) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    var isDragging by remember { mutableStateOf(false) }
-    var dragPosition by remember { mutableStateOf(0f) }
-    
-    val playPauseScale by animateFloatAsState(
-        targetValue = if (isPlaying) 1.1f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "playPauseScale"
-    )
-    
     Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(
-            defaultElevation = if (isPlaying) 12.dp else 8.dp
-        )
+        modifier = modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
     ) {
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
-            // 当前歌曲信息
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // 专辑封面占位符
-                Card(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(CircleShape),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.MusicNote,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                }
-                
-                Spacer(modifier = Modifier.width(12.dp))
-                
-                Column(modifier = Modifier.weight(1f)) {
+            // 歌曲信息
+            currentAudioFile?.let { audioFile ->
+                Column {
                     Text(
-                        text = currentTrack.title,
+                        text = audioFile.title,
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
-                        text = "${currentTrack.artist} • ${currentTrack.album}",
-                        style = MaterialTheme.typography.bodySmall,
+                        text = audioFile.artist ?: "Unknown Artist",
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
                 
-                // 音量控制
-                VolumeControl(
-                    volume = volume,
-                    onVolumeChange = onVolumeChange
-                )
+                Spacer(modifier = Modifier.height(16.dp))
             }
-            
-            Spacer(modifier = Modifier.height(16.dp))
             
             // 进度条
             Column {
                 Slider(
-                    value = if (isDragging) dragPosition else if (duration > 0) currentPosition.toFloat() / duration else 0f,
+                    value = if (duration > 0) currentPosition.toFloat() / duration else 0f,
                     onValueChange = { value ->
-                        isDragging = true
-                        dragPosition = value
+                        if (duration > 0) {
+                            onSeek((value * duration).toLong())
+                        }
                     },
-                    onValueChangeFinished = {
-                        isDragging = false
-                        val seekPosition = (dragPosition * duration).toLong()
-                        onSeekTo(seekPosition)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = SliderDefaults.colors(
-                        thumbColor = MaterialTheme.colorScheme.primary,
-                        activeTrackColor = MaterialTheme.colorScheme.primary
-                    )
+                    modifier = Modifier.fillMaxWidth()
                 )
                 
-                // 时间显示
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = formatTime(if (isDragging) (dragPosition * duration).toLong() else currentPosition),
+                        text = formatDuration(currentPosition),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = formatTime(duration),
+                        text = formatDuration(duration),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -148,7 +87,7 @@ fun EnhancedPlaybackControls(
             
             Spacer(modifier = Modifier.height(16.dp))
             
-            // 播放控制按钮
+            // 控制按钮
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -158,47 +97,43 @@ fun EnhancedPlaybackControls(
                 IconButton(
                     onClick = {
                         val nextMode = when (playMode) {
-                            PlayMode.SEQUENTIAL -> PlayMode.REPEAT_ALL
-                            PlayMode.REPEAT_ALL -> PlayMode.REPEAT_ONE
-                            PlayMode.REPEAT_ONE -> PlayMode.SEQUENTIAL
+                            PlayMode.SEQUENCE -> PlayMode.LOOP_ALL
+                            PlayMode.LOOP_ALL -> PlayMode.LOOP_ONE
+                            PlayMode.LOOP_ONE -> PlayMode.SHUFFLE
+                            PlayMode.SHUFFLE -> PlayMode.SEQUENCE
                         }
                         onPlayModeChange(nextMode)
                     }
                 ) {
-                    val (icon, description) = when (playMode) {
-                        PlayMode.SEQUENTIAL -> Icons.Default.PlayArrow to "顺序播放"
-                        PlayMode.REPEAT_ALL -> Icons.Default.Repeat to "列表循环"
-                        PlayMode.REPEAT_ONE -> Icons.Default.RepeatOne to "单曲循环"
-                    }
                     Icon(
-                        icon, 
-                        contentDescription = description,
-                        tint = if (playMode == PlayMode.SEQUENTIAL) 
-                            MaterialTheme.colorScheme.onSurfaceVariant 
-                        else 
-                            MaterialTheme.colorScheme.primary
+                        imageVector = when (playMode) {
+                            PlayMode.SEQUENCE -> Icons.Default.PlayArrow
+                            PlayMode.LOOP_ALL -> Icons.Default.Repeat
+                            PlayMode.LOOP_ONE -> Icons.Default.RepeatOne
+                            PlayMode.SHUFFLE -> Icons.Default.Shuffle
+                        },
+                        contentDescription = "Play Mode"
                     )
                 }
                 
                 // 上一首
                 IconButton(onClick = onPrevious) {
                     Icon(
-                        Icons.Default.SkipPrevious, 
-                        contentDescription = "上一首",
-                        modifier = Modifier.size(32.dp)
+                        imageVector = Icons.Default.SkipPrevious,
+                        contentDescription = "Previous"
                     )
                 }
                 
-                // 播放/暂停 (大按钮)
-                FilledIconButton(
+                // 播放/暂停
+                IconButton(
                     onClick = onPlayPause,
                     modifier = Modifier
-                        .size(64.dp)
-                        .scale(playPauseScale)
+                        .size(56.dp)
+                        .clip(CircleShape)
                 ) {
                     Icon(
-                        if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (isPlaying) "暂停" else "播放",
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
                         modifier = Modifier.size(32.dp)
                     )
                 }
@@ -206,70 +141,21 @@ fun EnhancedPlaybackControls(
                 // 下一首
                 IconButton(onClick = onNext) {
                     Icon(
-                        Icons.Default.SkipNext, 
-                        contentDescription = "下一首",
-                        modifier = Modifier.size(32.dp)
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "Next"
                     )
                 }
                 
-                // 更多选项占位符
-                IconButton(onClick = { /* TODO: 实现更多选项 */ }) {
-                    Icon(
-                        Icons.Default.MoreVert, 
-                        contentDescription = "更多选项"
-                    )
-                }
+                // 占位符（保持布局平衡）
+                Spacer(modifier = Modifier.size(48.dp))
             }
         }
     }
 }
 
-@Composable
-fun VolumeControl(
-    volume: Float,
-    onVolumeChange: (Float) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var expanded by remember { mutableStateOf(false) }
-    
-    Box(modifier = modifier) {
-        IconButton(onClick = { expanded = !expanded }) {
-            Icon(
-                when {
-                    volume == 0f -> Icons.Default.VolumeOff
-                    volume < 0.5f -> Icons.Default.VolumeDown
-                    else -> Icons.Default.VolumeUp
-                },
-                contentDescription = "音量控制"
-            )
-        }
-        
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            Column(
-                modifier = Modifier
-                    .width(200.dp)
-                    .padding(16.dp)
-            ) {
-                Text(
-                    text = "音量: ${(volume * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.bodySmall
-                )
-                Slider(
-                    value = volume,
-                    onValueChange = onVolumeChange,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-    }
-}
-
-fun formatTime(timeMs: Long): String {
-    val totalSeconds = timeMs / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return String.format("%d:%02d", minutes, seconds)
+private fun formatDuration(milliseconds: Long): String {
+    val seconds = milliseconds / 1000
+    val minutes = seconds / 60
+    val remainingSeconds = seconds % 60
+    return String.format("%d:%02d", minutes, remainingSeconds)
 }

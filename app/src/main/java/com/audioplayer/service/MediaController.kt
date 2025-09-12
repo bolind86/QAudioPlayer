@@ -2,149 +2,84 @@ package com.audioplayer.service
 
 import android.content.ComponentName
 import android.content.Context
-import androidx.media3.common.MediaItem
-import androidx.media3.common.Player
-import androidx.media3.session.MediaController
-import androidx.media3.session.SessionToken
-import com.google.common.util.concurrent.ListenableFuture
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.IBinder
+import com.audioplayer.data.AudioFile
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 
-class MediaControllerManager(private val context: Context) {
-    private var mediaController: MediaController? = null
-    private var controllerFuture: ListenableFuture<MediaController>? = null
-    private var positionUpdateJob: Job? = null
+class MediaController(private val context: Context) {
     
-    private val _isConnected = MutableStateFlow(false)
-    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+    private var audioService: AudioService? = null
+    private var bound = false
+    private var pendingCompletionCallback: (() -> Unit)? = null
     
-    private val _isPlaying = MutableStateFlow(false)
-    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
-    
-    private val _currentPosition = MutableStateFlow(0L)
-    val currentPosition: StateFlow<Long> = _currentPosition.asStateFlow()
-    
-    private val _duration = MutableStateFlow(0L)
-    val duration: StateFlow<Long> = _duration.asStateFlow()
-    
-    private val _volume = MutableStateFlow(0.8f)
-    val volume: StateFlow<Float> = _volume.asStateFlow()
-    
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    
-    fun initialize() {
-        val sessionToken = SessionToken(
-            context,
-            ComponentName(context, AudioService::class.java)
-        )
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(className: ComponentName, service: IBinder) {
+            val binder = service as AudioService.AudioBinder
+            audioService = binder.getService()
+            bound = true
+            
+            // 如果有待设置的回调，现在设置它
+            pendingCompletionCallback?.let {
+                audioService?.setOnCompletionCallback(it)
+                pendingCompletionCallback = null
+            }
+        }
         
-        controllerFuture = MediaController.Builder(context, sessionToken).buildAsync()
-        controllerFuture?.addListener({
-            mediaController = controllerFuture?.get()
-            _isConnected.value = true
-            setupPlayerListener()
-        }, androidx.core.content.ContextCompat.getMainExecutor(context))
-    }
-    
-    private fun setupPlayerListener() {
-        mediaController?.addListener(object : Player.Listener {
-            override fun onIsPlayingChanged(isPlaying: Boolean) {
-                _isPlaying.value = isPlaying
-                if (isPlaying) {
-                    startPositionUpdater()
-                } else {
-                    stopPositionUpdater()
-                }
-            }
-            
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                mediaItem?.let {
-                    _duration.value = mediaController?.duration ?: 0L
-                    _currentPosition.value = 0L
-                }
-            }
-            
-            override fun onPlaybackStateChanged(playbackState: Int) {
-                when (playbackState) {
-                    Player.STATE_READY -> {
-                        _duration.value = mediaController?.duration ?: 0L
-                        if (mediaController?.isPlaying == true) {
-                            startPositionUpdater()
-                        }
-                    }
-                    Player.STATE_IDLE, Player.STATE_ENDED -> {
-                        stopPositionUpdater()
-                    }
-                }
-            }
-        })
-    }
-    
-    private fun startPositionUpdater() {
-        stopPositionUpdater()
-        positionUpdateJob = scope.launch {
-            while (isActive) {
-                try {
-                    mediaController?.let { controller ->
-                        _currentPosition.value = controller.currentPosition
-                        _duration.value = controller.duration
-                    }
-                    delay(100) // 更新频率：100ms
-                } catch (e: Exception) {
-                    // 处理异常
-                    break
-                }
-            }
+        override fun onServiceDisconnected(arg0: ComponentName) {
+            bound = false
+            audioService = null
         }
     }
     
-    private fun stopPositionUpdater() {
-        positionUpdateJob?.cancel()
-        positionUpdateJob = null
+    fun bindService() {
+        val intent = Intent(context, AudioService::class.java)
+        context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
     
-    fun play() {
-        mediaController?.play()
+    fun unbindService() {
+        if (bound) {
+            context.unbindService(serviceConnection)
+            bound = false
+        }
+    }
+    
+    fun play(audioFile: AudioFile) {
+        audioService?.playAudio(audioFile)
     }
     
     fun pause() {
-        mediaController?.pause()
+        audioService?.pauseAudio()
     }
     
-    fun seekTo(position: Long) {
-        mediaController?.seekTo(position)
-        _currentPosition.value = position
+    fun resume() {
+        audioService?.resumeAudio()
     }
     
-    fun skipToNext() {
-        mediaController?.seekToNext()
+    fun stop() {
+        audioService?.stopAudio()
     }
     
-    fun skipToPrevious() {
-        mediaController?.seekToPrevious()
+    fun seekTo(position: Int) {
+        audioService?.seekTo(position.toLong())
     }
     
-    fun setPlaylist(mediaItems: List<MediaItem>, startIndex: Int = 0) {
-        mediaController?.setMediaItems(mediaItems, startIndex, 0)
-        mediaController?.prepare()
-    }
+    fun getCurrentPosition(): Int = audioService?.getCurrentPosition()?.toInt() ?: 0
     
-    fun setVolume(volume: Float) {
-        mediaController?.volume = volume.coerceIn(0f, 1f)
-        _volume.value = volume
-    }
+    fun getDuration(): Int = audioService?.getDuration()?.toInt() ?: 0
     
-    fun setRepeatMode(repeatMode: Int) {
-        mediaController?.repeatMode = repeatMode
-    }
+    fun isPlaying(): Boolean = audioService?.isPlaying() ?: false
     
-    fun release() {
-        stopPositionUpdater()
-        scope.cancel()
-        mediaController?.release()
-        controllerFuture?.cancel(true)
-        _isConnected.value = false
+    fun getCurrentAudioFile(): AudioFile? = audioService?.getCurrentAudioFile()
+    
+    fun setOnCompletionCallback(callback: () -> Unit) {
+        if (bound && audioService != null) {
+            // 服务已经绑定，直接设置回调
+            audioService?.setOnCompletionCallback(callback)
+        } else {
+            // 服务还没有绑定，先保存回调
+            pendingCompletionCallback = callback
+        }
     }
 }

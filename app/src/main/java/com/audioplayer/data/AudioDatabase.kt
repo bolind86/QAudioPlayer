@@ -58,12 +58,24 @@ interface PlaylistDao {
     version = 1,
     exportSchema = false
 )
-@TypeConverters(Converters::class)
 abstract class AudioDatabase : RoomDatabase() {
     abstract fun audioFileDao(): AudioFileDao
     abstract fun playlistDao(): PlaylistDao
-}
 
-class Converters {
-    // 如果需要类型转换可以在这里添加
+    companion object {
+        @Volatile
+        private var INSTANCE: AudioDatabase? = null
+
+        fun getDatabase(context: android.content.Context): AudioDatabase {
+            return INSTANCE ?: synchronized(this) {
+                val instance = androidx.room.Room.databaseBuilder(
+                    context.applicationContext,
+                    AudioDatabase::class.java,
+                    "audio_database"
+                ).build()
+                INSTANCE = instance
+                instance
+            }
+        }
+    }
 }

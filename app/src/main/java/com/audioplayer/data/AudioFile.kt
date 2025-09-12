@@ -1,19 +1,17 @@
 package com.audioplayer.data
 
-import androidx.room.Entity
-import androidx.room.PrimaryKey
+import androidx.room.*
+import java.util.*
 
 @Entity(tableName = "audio_files")
 data class AudioFile(
-    @PrimaryKey
-    val id: String,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val title: String,
-    val artist: String,
-    val album: String,
-    val duration: Long,
-    val filePath: String,
+    val artist: String? = null,
+    val album: String? = null,
+    val duration: Long = 0L,
+    val path: String,
     val folderPath: String,
-    val size: Long,
-    val dateAdded: Long,
-    val albumArt: String? = null
+    val size: Long = 0L,
+    val dateAdded: Long = System.currentTimeMillis()
 )

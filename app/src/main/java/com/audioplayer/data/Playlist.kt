@@ -1,22 +1,35 @@
 package com.audioplayer.data
 
-import androidx.room.Entity
-import androidx.room.PrimaryKey
+import androidx.room.*
+import java.util.*
 
 @Entity(tableName = "playlists")
 data class Playlist(
-    @PrimaryKey
-    val id: String,
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
     val name: String,
-    val folderPath: String,
-    val createdAt: Long,
-    val updatedAt: Long
+    val createdAt: Long = System.currentTimeMillis(),
+    val updatedAt: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "playlist_audio_files")
+@Entity(
+    tableName = "playlist_audio_files",
+    primaryKeys = ["playlistId", "audioFileId"],
+    foreignKeys = [
+        ForeignKey(
+            entity = Playlist::class,
+            parentColumns = ["id"],
+            childColumns = ["playlistId"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = AudioFile::class,
+            parentColumns = ["id"],
+            childColumns = ["audioFileId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ]
+)
 data class PlaylistAudioFile(
-    @PrimaryKey
-    val id: String,
     val playlistId: String,
     val audioFileId: String,
     val position: Int
