@@ -306,21 +306,22 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
                 
                 android.util.Log.d("AudioPlayerVM", "Creating playlist ${playlist.name} from folder URI: $folderUri")
                 
-                // 扫描选择文件夹中的音频文件
-                val audioFiles = scanAudioFilesFromSelectedFolder(folderUri)
+                // 先扫描并保存所有音频文件到数据库
+                val allAudioFiles = repository.scanAudioFiles()
+                repository.insertAudioFiles(allAudioFiles)
                 
-                android.util.Log.d("AudioPlayerVM", "Found ${audioFiles.size} audio files in selected folder")
+                // 然后从数据库中获取并过滤出指定文件夹的文件
+                val filteredFiles = filterAudioFilesByFolder(allAudioFiles, folderUri)
                 
-                if (audioFiles.isNotEmpty()) {
-                    // 先保存音频文件到数据库
-                    repository.insertAudioFiles(audioFiles)
-                    
-                    // 添加到播放列表
-                    audioFiles.forEachIndexed { index, audioFile ->
+                android.util.Log.d("AudioPlayerVM", "Found ${filteredFiles.size} audio files in selected folder")
+                
+                if (filteredFiles.isNotEmpty()) {
+                    // 添加过滤后的文件到播放列表
+                    filteredFiles.forEachIndexed { index, audioFile ->
                         repository.addAudioFileToPlaylist(playlist.id, audioFile.id, index)
                     }
                     
-                    android.util.Log.d("AudioPlayerVM", "Successfully added ${audioFiles.size} files to playlist ${playlist.name}")
+                    android.util.Log.d("AudioPlayerVM", "Successfully added ${filteredFiles.size} files to playlist ${playlist.name}")
                 } else {
                     android.util.Log.w("AudioPlayerVM", "No audio files found in selected folder")
                 }
@@ -331,13 +332,10 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
     
-    private suspend fun scanAudioFilesFromSelectedFolder(folderUri: String): List<AudioFile> = withContext(Dispatchers.IO) {
-        val audioFiles = mutableListOf<AudioFile>()
+    private fun filterAudioFilesByFolder(allAudioFiles: List<AudioFile>, folderUri: String): List<AudioFile> {
+        val filteredFiles = mutableListOf<AudioFile>()
         
         try {
-            // 获取设备中的所有音频文件
-            val allAudioFiles = repository.scanAudioFiles()
-            
             // 解析文档树URI获取文件夹名称
             val folderName = extractFolderNameFromUri(folderUri)
             
@@ -354,19 +352,19 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
                     if (parentFolder != null && 
                         (parentFolder.contains(folderName, ignoreCase = true) || 
                          file.parentFile?.name?.equals(folderName, ignoreCase = true) == true)) {
-                        audioFiles.add(audioFile)
+                        filteredFiles.add(audioFile)
                         android.util.Log.d("AudioPlayerVM", "Added file: ${audioFile.title} from ${parentFolder}")
                     }
                 }
             }
             
-            android.util.Log.d("AudioPlayerVM", "Filtered ${audioFiles.size} audio files from folder $folderName")
+            android.util.Log.d("AudioPlayerVM", "Filtered ${filteredFiles.size} audio files from folder $folderName")
             
         } catch (e: Exception) {
-            android.util.Log.e("AudioPlayerVM", "Error scanning folder audio files: ${e.message}", e)
+            android.util.Log.e("AudioPlayerVM", "Error filtering folder audio files: ${e.message}", e)
         }
         
-        audioFiles
+        return filteredFiles
     }
     
     private fun extractFolderNameFromUri(folderUri: String): String? {
