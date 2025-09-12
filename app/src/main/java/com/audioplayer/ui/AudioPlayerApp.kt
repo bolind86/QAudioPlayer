@@ -31,33 +31,33 @@ fun AudioPlayerApp(
     val playMode by viewModel.playMode.collectAsState()
     val currentPosition by viewModel.currentPosition.collectAsState()
     val duration by viewModel.duration.collectAsState()
-    val currentPlaylist by viewModel.currentPlaylist.collectAsState()
+    val selectedPlaylist by viewModel.selectedPlaylist.collectAsState()
+    val currentPlaylistAudioFiles by viewModel.currentPlaylistAudioFiles.collectAsState()
+    
+    var currentScreen by remember { mutableStateOf("playlists") }
     
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("AudioPlayer") },
-                actions = {
-                    IconButton(
-                        onClick = { viewModel.refreshAudioFiles() }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "刷新音乐库"
-                        )
-                    }
-                    IconButton(
-                        onClick = { 
-                            // TODO: 打开文件选择器
+            when (currentScreen) {
+                "playlists" -> {
+                    TopAppBar(
+                        title = { Text("AudioPlayer") },
+                        actions = {
+                            IconButton(
+                                onClick = { viewModel.refreshAudioFiles() }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "刷新音乐库"
+                                )
+                            }
                         }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "添加歌曲"
-                        )
-                    }
+                    )
                 }
-            )
+                else -> {
+                    // 其他界面的TopBar由各自界面处理
+                }
+            }
         },
         bottomBar = {
             if (currentAudioFile != null) {
@@ -82,38 +82,33 @@ fun AudioPlayerApp(
             }
         }
     ) { paddingValues ->
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp)
-        ) {
-            if (audioFiles.isEmpty()) {
-                // 显示文件夹选择器
-                FolderPicker(
+        when (currentScreen) {
+            "playlists" -> {
+                PlaylistManagerScreen(
                     playlists = playlists,
-                    onFolderSelected = { folderPath ->
-                        // TODO: 实现文件夹选择逻辑
-                    }
+                    viewModel = viewModel,
+                    onPlaylistSelected = { playlist ->
+                        viewModel.selectPlaylist(playlist)
+                        currentScreen = "playlist_detail"
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(paddingValues)
                 )
-            } else {
-                // 显示音频文件列表
-                Text(
-                    text = "音乐库 (${audioFiles.size} 首歌曲)",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                
-                LazyColumn {
-                    items(audioFiles) { audioFile ->
-                        AudioFileItem(
-                            audioFile = audioFile,
-                            isCurrentPlaying = currentAudioFile?.id == audioFile.id,
-                            onClick = {
-                                viewModel.playAudio(audioFile, audioFiles)
-                            }
-                        )
-                    }
+            }
+            "playlist_detail" -> {
+                selectedPlaylist?.let { playlist ->
+                    PlaylistDetailScreen(
+                        playlist = playlist,
+                        audioFiles = currentPlaylistAudioFiles,
+                        currentAudioFile = currentAudioFile,
+                        allAudioFiles = audioFiles,
+                        viewModel = viewModel,
+                        onBack = { currentScreen = "playlists" },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues)
+                    )
                 }
             }
         }

@@ -42,6 +42,12 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
     private val _currentPlaylist = MutableStateFlow<List<AudioFile>>(emptyList())
     val currentPlaylist: StateFlow<List<AudioFile>> = _currentPlaylist.asStateFlow()
     
+    private val _selectedPlaylist = MutableStateFlow<Playlist?>(null)
+    val selectedPlaylist: StateFlow<Playlist?> = _selectedPlaylist.asStateFlow()
+    
+    private val _currentPlaylistAudioFiles = MutableStateFlow<List<AudioFile>>(emptyList())
+    val currentPlaylistAudioFiles: StateFlow<List<AudioFile>> = _currentPlaylistAudioFiles.asStateFlow()
+    
     private var currentIndex = 0
     
     fun setMediaController(controller: MediaController) {
@@ -287,6 +293,54 @@ class AudioPlayerViewModel(application: Application) : AndroidViewModel(applicat
     fun deletePlaylist(playlist: Playlist) {
         viewModelScope.launch {
             repository.deletePlaylist(playlist)
+        }
+    }
+    
+    fun createPlaylistFromFolder(name: String, folderPath: String) {
+        viewModelScope.launch {
+            try {
+                val playlist = Playlist(name = name)
+                repository.insertPlaylist(playlist)
+                
+                // 扫描文件夹中的音频文件
+                val fileManager = com.audioplayer.utils.FileManager(getApplication())
+                val audioFiles = fileManager.scanAudioFilesInFolder(folderPath)
+                
+                // 添加到数据库
+                repository.insertAudioFiles(audioFiles)
+                
+                // 添加到播放列表
+                audioFiles.forEachIndexed { index, audioFile ->
+                    repository.addAudioFileToPlaylist(playlist.id, audioFile.id, index)
+                }
+                
+            } catch (e: Exception) {
+                android.util.Log.e("AudioPlayerVM", "Error creating playlist from folder: ${e.message}", e)
+            }
+        }
+    }
+    
+    fun selectPlaylist(playlist: Playlist) {
+        _selectedPlaylist.value = playlist
+        viewModelScope.launch {
+            repository.getPlaylistAudioFiles(playlist.id).collect { audioFiles ->
+                _currentPlaylistAudioFiles.value = audioFiles
+            }
+        }
+    }
+    
+    fun addAudioFileToCurrentPlaylist(audioFile: AudioFile) {
+        val playlist = _selectedPlaylist.value ?: return
+        viewModelScope.launch {
+            val currentFiles = _currentPlaylistAudioFiles.value
+            repository.addAudioFileToPlaylist(playlist.id, audioFile.id, currentFiles.size)
+        }
+    }
+    
+    fun removeAudioFileFromCurrentPlaylist(audioFile: AudioFile) {
+        val playlist = _selectedPlaylist.value ?: return
+        viewModelScope.launch {
+            repository.removeAudioFileFromPlaylist(playlist.id, audioFile.id)
         }
     }
     

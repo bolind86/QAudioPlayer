@@ -41,6 +41,10 @@ class AudioRepository(context: Context) {
         playlistDao.insertPlaylistAudioFile(PlaylistAudioFile(playlistId, audioFileId, position))
     }
     
+    suspend fun removeAudioFileFromPlaylist(playlistId: String, audioFileId: String) {
+        playlistDao.removeAudioFileFromPlaylist(playlistId, audioFileId)
+    }
+    
     suspend fun clearPlaylistAudioFiles(playlistId: String) = 
         playlistDao.clearPlaylistAudioFiles(playlistId)
 }
